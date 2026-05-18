@@ -1,0 +1,25 @@
+body { font-family: 'Inter', sans-serif; }
+.code-font { font-family: 'Fira Code', monospace; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: #f1f1f1; }
+::-webkit-scrollbar-thumb { background: #888; border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+
+.sidebar-transition { transition: transform 0.3s ease-in-out; }
+.history-transition { transition: transform 0.3s ease-in-out; }
+
+/* Gentle Shake Animation */
+@keyframes gentle-shake {
+    0% { transform: rotate(0deg); }
+    5% { transform: rotate(-5deg); }
+    10% { transform: rotate(5deg); }
+    15% { transform: rotate(-5deg); }
+    20% { transform: rotate(5deg); }
+    25% { transform: rotate(0deg); }
+    100% { transform: rotate(0deg); }
+}
+.shake-attention {
+    display: inline-block;
+    animation: gentle-shake 3s ease-in-out infinite;
+    color: #6366f1;
+}
