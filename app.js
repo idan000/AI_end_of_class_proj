@@ -28,6 +28,7 @@ const sidebarData = {
 
 let availableModels = [];
 let availableModelsKey = "";
+let apiKeyStatus = localStorage.getItem('user_gemini_api_key_status') || '';
 
 // --- UI TOGGLES ---
 
@@ -85,6 +86,9 @@ function toggleModal(id) {
 
     // Toggle adds the 'hidden' class if it's missing, or removes it if it's there
     modal.classList.toggle('hidden');
+    if (id === 'apiKeyModal') {
+        checkKeyStatus();
+    }
 }
 
 // --- CONTENT RENDERING ---
@@ -448,12 +452,9 @@ function clearHistory() {
 // --- KEY MANAGEMENT (FIXED SYNTAX ERROR HERE) ---
 
 // Saves the API key that the user pasted into the popup
-function saveUserKey() {
+async function saveUserKey() {
     // Get the text from the input box, trimming extra spaces
     const keyInput = document.getElementById('userApiKeyInput').value.trim();
-    
-    // If the box is empty, do nothing
-    if (!keyInput) return;
 
     // Get the save button to update its text
     const btn = document.getElementById('saveKeyBtn');
@@ -464,13 +465,22 @@ function saveUserKey() {
     btn.disabled = true;
 
     try {
+        if (!keyInput) {
+            // If the user cleared the input, remove the stored key entirely.
+            localStorage.removeItem('user_gemini_api_key');
+            localStorage.removeItem('user_gemini_api_key_status');
+            checkKeyStatus();
+            toggleModal('apiKeyModal');
+            return;
+        }
+
         // Save the key to the browser's local memory
         localStorage.setItem('user_gemini_api_key', keyInput);
         
-        // Update the key icon in the header (stop shaking, turn green)
-        checkKeyStatus();
-        
-        // Hide the modal popup
+        // Validate it immediately so the icon reflects invalid keys
+        await validateKey();
+
+        // Hide the modal popup after validation
         toggleModal('apiKeyModal');
     } catch (error) {
         // If local storage fails (e.g., privacy mode restrictions)
@@ -496,63 +506,29 @@ async function validateKey() {
         const models = await listSupportedModels(key);
         if (!models.length) {
             const msg = 'No models were returned for this key. Ensure the Generative Language API is enabled and the key has access.';
+            localStorage.setItem('user_gemini_api_key_status', 'invalid');
+            checkKeyStatus();
             if (resultEl) resultEl.innerHTML = `<div class="text-sm text-red-600">${msg}</div>`;
-            alert(msg);
             return;
         }
 
-        const preferredAvailable = models.some(m => normalizeModelName(m.name) === normalizeModelName(publicModelName));
-        const validatedModel = await resolveModelForKey(key);
-        const headerText = `Validation succeeded. ${models.length} models found.`;
-        const selectedText = `Preferred model ${publicModelName} ${preferredAvailable ? 'is available.' : 'is not available.'}`;
-        const activeModelText = `Active model selected: ${validatedModel || 'none'}`;
-
-        const rowsHtml = models.map(m => {
-            const valid = m.supportedMethods.some(method => typeof method === 'string' && method.toLowerCase().includes('generate'));
-            const icon = valid ? '✅' : '❌';
-            return `<tr class="border-t border-gray-200"><td class="px-3 py-2 text-sm text-gray-800 break-words">${m.name}</td><td class="px-3 py-2 text-center text-sm">${icon}</td></tr>`;
-        }).join('');
-
-        const tableHtml = `
-            <div class="overflow-x-auto rounded-xl border border-gray-200 mt-3">
-                <table class="min-w-full text-left text-sm text-gray-700">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-3 py-2 font-semibold">AI Model</th>
-                            <th class="px-3 py-2 font-semibold text-center">Valid</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rowsHtml}</tbody>
-                </table>
-            </div>
-        `;
-
-        const detailsHtml = `
-            <details class="mt-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-                <summary class="cursor-pointer font-semibold text-gray-800">Show model validation table</summary>
-                <div class="mt-4 space-y-2 text-sm text-gray-700">
-                    <div>${selectedText}</div>
-                    <div>${activeModelText}</div>
-                    ${tableHtml}
-                </div>
-            </details>
-        `;
+        localStorage.setItem('user_gemini_api_key_status', 'valid');
+        checkKeyStatus();
 
         if (resultEl) {
             resultEl.innerHTML = `
-                <div class="space-y-2">
-                    <div class="text-sm font-medium text-gray-900">${headerText}</div>
-                    <div class="text-sm text-gray-600">${selectedText}</div>
-                    <div class="text-sm text-gray-600">${activeModelText}</div>
-                    ${detailsHtml}
+                <div class="flex items-center gap-2 text-green-600 font-semibold">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                    ✓ API Key is valid and working
                 </div>
             `;
         }
     } catch (e) {
         const errMsg = `Validation error: ${e.message}`;
+        localStorage.setItem('user_gemini_api_key_status', 'invalid');
+        checkKeyStatus();
         if (resultEl) resultEl.innerHTML = `<div class="text-sm text-red-600">${errMsg}</div>`;
         console.error('validateKey error', e);
-        alert(errMsg);
     }
 }
 
@@ -562,22 +538,26 @@ function checkKeyStatus() {
     const btn = document.getElementById('keyStatusBtn');
     // Check if memory has a key stored (returns true or false)
     const hasKey = !!localStorage.getItem('user_gemini_api_key');
-    
+    apiKeyStatus = localStorage.getItem('user_gemini_api_key_status') || '';
+
     // Remove all specific color and animation classes first to reset it
-    btn.classList.remove('shake-attention', 'text-gray-400', 'text-green-500');
-    
-    if (hasKey) {
-        // If a key exists, make the icon solid green
-        btn.classList.add('text-green-500');
-    } else {
-        // If no key exists, check if they hit the limit
+    btn.classList.remove('shake-attention', 'text-gray-400', 'text-green-500', 'text-red-500');
+
+    if (!hasKey) {
         if (usageCount >= FREE_LIMIT) {
-            // Wiggle to grab attention
             btn.classList.add('shake-attention');
         } else {
-            // Just stay gray if they still have free tries
             btn.classList.add('text-gray-400');
         }
+        return;
+    }
+
+    if (apiKeyStatus === 'valid') {
+        btn.classList.add('text-green-500');
+    } else if (apiKeyStatus === 'invalid') {
+        btn.classList.add('text-red-500');
+    } else {
+        btn.classList.add('text-gray-400');
     }
 }
 
