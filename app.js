@@ -145,6 +145,25 @@ function getModelEndpoint(model) {
     return normalizeModelPath(model);
 }
 
+async function fetchWithRetryModels(key, models, options) {
+    let lastError = null;
+    for (const model of models) {
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${getModelEndpoint(model)}:generateContent?key=${encodeURIComponent(key)}`;
+        try {
+            return await fetchWithRetry(apiUrl, options);
+        } catch (error) {
+            lastError = error;
+            const msg = error && error.message ? error.message : '';
+            if (msg.includes('503') || msg.toLowerCase().includes('unavailable')) {
+                console.warn(`Model ${model} unavailable, trying next supported model...`, error);
+                continue;
+            }
+            throw error;
+        }
+    }
+    throw lastError || new Error('All supported models failed.');
+}
+
 // This function updates the left sidebar whenever the user changes the language dropdown
 function updateSidebarContent() {
     // Find out which language is currently selected in the dropdown
@@ -296,40 +315,46 @@ async function handleSearch() {
 
     // Formulate the instruction telling the AI how to act and what to explain
     const systemPrompt = `You are an expert coding tutor. Provide a code snippet and line-by-line explanation for "${query}" in ${lang}.`;
-    
-    // Construct the exact URL required by Google to talk to the AI model
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${getModelEndpoint(activeModel)}:generateContent?key=${encodeURIComponent(activeKey)}`;
+
+    const requestOptions = {
+        method: 'POST', // Send data to the server
+        headers: { 'Content-Type': 'application/json' }, // Tell the server we are sending JSON
+        body: JSON.stringify({
+            contents: [{
+                role: "user",
+                parts: [{ text: query }] // The user's specific question
+            }],
+            systemInstruction: {
+                parts: [{ text: systemPrompt }] // The secret instructions for the AI personality
+            },
+            generationConfig: {
+                // Force the AI to respond strictly in a JSON format so our app doesn't break
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: "OBJECT",
+                    properties: {
+                        code: { type: "STRING" }, // Expect the code block as a single string
+                        explanation: {
+                            type: "ARRAY", // Expect the explanations as an array of line-by-line strings
+                            items: { type: "STRING" }
+                        }
+                    },
+                    required: ["code", "explanation"]
+                }
+            }
+        })
+    };
 
     try {
-        // Call our retry helper function to send the request securely
-        const result = await fetchWithRetry(apiUrl, {
-            method: 'POST', // Send data to the server
-            headers: { 'Content-Type': 'application/json' }, // Tell the server we are sending JSON
-            body: JSON.stringify({
-                contents: [{ 
-                    role: "user",
-                    parts: [{ text: query }] // The user's specific question
-                }],
-                systemInstruction: { 
-                    parts: [{ text: systemPrompt }] // The secret instructions for the AI personality
-                },
-                generationConfig: { 
-                    // Force the AI to respond strictly in a JSON format so our app doesn't break
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: "OBJECT",
-                        properties: {
-                            code: { type: "STRING" }, // Expect the code block as a single string
-                            explanation: { 
-                                type: "ARRAY", // Expect the explanations as an array of line-by-line strings
-                                items: { type: "STRING" } 
-                            }
-                        },
-                        required: ["code", "explanation"]
-                    }
-                }
-            })
-        });
+        const result = userStoredKey
+            ? await fetchWithRetryModels(activeKey, [
+                activeModel,
+                ...availableModels
+                    .filter(m => m.supportedMethods.some(method => typeof method === 'string' && method.toLowerCase().includes('generate')))
+                    .map(m => m.name)
+                    .filter(name => name && name !== activeModel)
+            ], requestOptions)
+            : await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/${getModelEndpoint(activeModel)}:generateContent?key=${encodeURIComponent(activeKey)}`, requestOptions);
 
         // Check if the AI returned a valid answer. Sometimes safety filters block responses.
         if (!result.candidates || result.candidates.length === 0) {
@@ -366,6 +391,9 @@ async function handleSearch() {
             const out = `Google rejected this key. Details: ${msg}\n\nOpen API Settings to validate the key or verify it in Google AI Studio.`;
             alert(out);
             toggleModal('apiKeyModal');
+        } else if (msg.includes('503') || msg.toLowerCase().includes('unavailable')) {
+            alert(`The selected Gemini model is temporarily unavailable or overloaded. Please try again later, or use 'Validate Key' to check available supported models.`);
+            showWelcome();
         } else {
             // Surface detailed error to the user and suggest validation
             alert(`Search failed: ${msg}\n\nTip: Use 'Validate Key' in API Settings to inspect the key, and check the console for more details.`);
@@ -473,7 +501,7 @@ async function validateKey() {
             return;
         }
 
-        const preferredAvailable = models.some(m => m.name === publicModelName);
+        const preferredAvailable = models.some(m => normalizeModelName(m.name) === normalizeModelName(publicModelName));
         const validatedModel = await resolveModelForKey(key);
         const headerText = `Validation succeeded. ${models.length} models found.`;
         const selectedText = `Preferred model ${publicModelName} ${preferredAvailable ? 'is available.' : 'is not available.'}`;
